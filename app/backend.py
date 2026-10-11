@@ -1,6 +1,7 @@
 """Per-browser application state over the existing Phases 5 and 7–9 APIs."""
 
 from typing import Callable, Optional
+from copy import deepcopy
 
 from src.config import settings
 from src.dialogue.session_store import SessionStore
@@ -38,11 +39,20 @@ class AppSession:
         """
         Drops this browser's old store and outputs; keeps loaded services.
         """
+        self.reset_case()
+        self.reset_quick()
+
+    def reset_case(self) -> None:
+        """Starts a new case without erasing this browser's quick questions."""
         self.flow.store = SessionStore()
         self.session_id = self.flow.store.create_session()
+        self.complaint = None
+        self.notice = None
+
+    def reset_quick(self) -> None:
+        """Starts quick chat without erasing confirmed case information."""
         self.quick_history = []
         self.quick_sources = []
-        self.complaint = None
         self.notice = None
 
     def submit_case(self, message: str, category=None):
@@ -107,7 +117,8 @@ class AppSession:
             answer = add_legal_disclaimer(settings.NO_ARTICLE_FALLBACK_AZ)
             self.notice = ("error", "Sual cavablandırılmadı. "
                            "Yenidən cəhd edin.")
-        self.quick_history.append({"role": "assistant", "content": answer})
+        self.quick_history.append({"role": "assistant", "content": answer,
+                                   "sources": deepcopy(self.quick_sources)})
 
     def generate(self):
         """Calls Phase 9 only when facts are ready; reuses unchanged drafts."""

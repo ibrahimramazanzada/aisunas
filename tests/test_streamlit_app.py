@@ -213,7 +213,7 @@ class TestStreamlitUI(unittest.TestCase):
         self.assertEqual(len(self.at.exception), 0)
         self.assertEqual(self.at.title[0].value, "Əmək hüququ köməkçisi")
         self.assertTrue(any(settings.LEGAL_DISCLAIMER_AZ in item.value
-                            for item in self.at.warning))
+                            for item in self.at.caption))
         self.send("İş vaxtı haqqında sual")
         self.qa.assert_called_once_with("İş vaxtı haqqında sual")
         self.assertEqual(len(self.at.chat_message), 2)
@@ -275,7 +275,8 @@ class TestStreamlitUI(unittest.TestCase):
         self.assertEqual(len(self.at.exception), 0)
         self.assertTrue(any(settings.NO_ARTICLE_FALLBACK_AZ in item.value
                             for item in self.at.warning))
-        self.assertEqual(len(self.at.expander), 0)
+        self.assertFalse(any(e.label.startswith("Maddə ")
+                             for e in self.at.expander))
 
     def test_untrusted_text_is_not_rendered_as_html(self):
         """Source and user strings are rendered as text rather than markup."""
@@ -317,7 +318,8 @@ class TestStreamlitUI(unittest.TestCase):
                          DC.UNPAID_OVERTIME)
         self.assertFalse(any(b.label == "Ərizə layihəsini hazırla"
                              for b in self.at.button))
-        self.assertEqual(len(self.at.expander), 0)
+        self.assertFalse(any(e.label.startswith("Maddə ")
+                             for e in self.at.expander))
 
     def test_provider_timeout_keeps_ui_case_available(self):
         """Provider errors render a safe warning without losing user facts."""
@@ -333,6 +335,77 @@ class TestStreamlitUI(unittest.TestCase):
         self.assertTrue(self.at.warning)
         self.assertFalse(any("secret" in item.value
                              for item in self.at.warning))
+
+    def test_suggested_question_submits_exactly_once(self):
+        """An example is a real request and is not resubmitted on reruns."""
+        self.at.button(key="example_0").click().run()
+        self.qa.assert_called_once_with(
+            "İşəgötürən əmək müqaviləsinə hansı əsaslarla xitam verə bilər?")
+        self.at.run()
+        self.qa.assert_called_once()
+        self.assertEqual(len(self.at.chat_message), 2)
+        self.assertEqual(len(self.at.exception), 0)
+
+    def test_each_answer_keeps_its_original_evidence(self):
+        """Later retrieval cannot replace metadata attached to earlier QA."""
+        self.send("birinci sual")
+        second = fixture_chunk()
+        second.article_number = "124"
+        self.qa.return_value = QAResult("**İkinci cavab**", True, [second])
+        self.send("ikinci sual")
+        labels = {e.label for e in self.at.expander}
+        self.assertIn("Maddə 123", labels)
+        self.assertIn("Maddə 124", labels)
+        self.assertEqual(self.session.quick_history[1]["sources"][0][
+            "article_number"], "123")
+        self.assertTrue(any("**İkinci cavab**" in m.value
+                            for m in self.at.markdown))
+
+    def test_new_quick_chat_preserves_case(self):
+        """Quick Chat reset must not discard a confirmed, complete case."""
+        self.case_mode()
+        self.send(category_label(DC.UNPAID_WAGES))
+        self.send(set_wages(self.llm))
+        before = self.session.case_state.to_dict()
+        self.at.radio(key="mode").set_value("Sürətli sual").run()
+        self.send("sual")
+        self.button("Yeni söhbət").click().run()
+        self.assertEqual(self.session.case_state.to_dict(), before)
+        self.assertEqual(self.session.quick_history, [])
+        self.assertEqual(len(self.at.chat_message), 0)
+        self.assertEqual(len(self.at.exception), 0)
+
+    def test_new_case_preserves_quick_chat(self):
+        """Case reset clears category and facts, retaining the other mode."""
+        self.send("sual")
+        before = list(self.session.quick_history)
+        self.case_mode()
+        self.send(category_label(DC.UNPAID_WAGES))
+        self.button("Yeni söhbət").click().run()
+        self.assertEqual(self.session.quick_history, before)
+        self.assertFalse(self.session.case_state.category_confirmed)
+        self.assertIsNone(self.at.selectbox(key="category_choice").value)
+
+    def test_case_progress_and_copy_preview_follow_real_state(self):
+        """Progress, preview and copy text use actual collected case data."""
+        self.case_mode()
+        self.assertEqual(self.at.get("progress")[0].proto.value, 0)
+        self.send(category_label(DC.UNPAID_WAGES))
+        self.send(set_wages(self.llm))
+        self.assertEqual(self.at.get("progress")[0].proto.value, 100)
+        self.button("Ərizə layihəsini hazırla").click().run()
+        self.assertTrue(any(c.value == self.session.complaint.draft
+                            for c in self.at.code))
+        self.assertEqual(len(self.at.exception), 0)
+
+    def test_assistant_markdown_does_not_enable_html(self):
+        """Formatting remains readable without executing provider markup."""
+        self.qa.return_value = QAResult(
+            '**Başlıq**\n\n<script>alert("test")</script>', True, [])
+        self.send("sual")
+        answer = next(m for m in self.at.markdown if "**Başlıq**" in m.value)
+        self.assertIn("&lt;script&gt;", answer.value)
+        self.assertFalse(answer.proto.allow_html)
 
 
 if __name__ == "__main__":
