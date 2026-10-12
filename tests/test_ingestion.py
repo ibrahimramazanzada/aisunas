@@ -5,10 +5,10 @@ and spot-check validation.
 """
 
 import sys
+import tempfile
 from pathlib import Path
 import pymupdf
 
-from src.config import settings
 from src.ingestion.article_parser import ArticleParser
 from src.ingestion.pdf_extractor import PDFExtractor
 from src.ingestion.text_cleaner import (
@@ -28,10 +28,18 @@ def create_sample_azerbaijani_pdf(output_path: Path) -> Path:
         Path: The created PDF file path.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    font_candidates = (
+        Path("C:/Windows/Fonts/arial.ttf"),
+        Path("/mnt/c/Windows/Fonts/arial.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    )
+    font_path = next((p for p in font_candidates if p.is_file()), None)
+    if font_path is None:
+        raise FileNotFoundError("A Unicode font is required for this test.")
     doc = pymupdf.open()
 
     page1 = doc.new_page()
-    page1.insert_font(fontname="arial", fontfile="C:/Windows/Fonts/arial.ttf")
+    page1.insert_font(fontname="arial", fontfile=str(font_path))
 
     content_p1 = (
         "AZƏRBAYCAN RESPUBLİKASININ ƏMƏK MƏCƏLLƏSİ\n\n"
@@ -53,7 +61,7 @@ def create_sample_azerbaijani_pdf(output_path: Path) -> Path:
     )
 
     page2 = doc.new_page()
-    page2.insert_font(fontname="arial", fontfile="C:/Windows/Fonts/arial.ttf")
+    page2.insert_font(fontname="arial", fontfile=str(font_path))
     content_p2 = (
         "Maddə 74. Tərəflərin iradəsindən asılı olmayan hallarda əmək "
         "müqaviləsinə xitam verilməsinin əsasları\n\n"
@@ -74,9 +82,11 @@ def create_sample_azerbaijani_pdf(output_path: Path) -> Path:
     return output_path
 
 
-def test_ingestion_end_to_end():
+def _run_ingestion_test(output_dir: Path):
     """Tests PDF extraction, article parsing, and validation end-to-end."""
-    sample_pdf_path = settings.DATA_RAW_DIR / "sample_emek_mecellesi.pdf"
+    sample_pdf_path = output_dir / "sample_emek_mecellesi.pdf"
+    output_json = output_dir / "articles.json"
+    output_jsonl = output_dir / "articles.jsonl"
     create_sample_azerbaijani_pdf(sample_pdf_path)
 
     # 1. Extract
@@ -102,18 +112,24 @@ def test_ingestion_end_to_end():
     # 3. Save
     parser.save_records(
         articles,
-        output_json=settings.ARTICLES_JSON,
-        output_jsonl=settings.ARTICLES_JSONL,
+        output_json=output_json,
+        output_jsonl=output_jsonl,
     )
-    assert settings.ARTICLES_JSON.is_file()
-    assert settings.ARTICLES_JSONL.is_file()
+    assert output_json.is_file()
+    assert output_jsonl.is_file()
 
     # 4. Spot check validation
-    passed, report = validate_articles_file(settings.ARTICLES_JSON)
+    passed, report = validate_articles_file(output_json)
     for line in report:
         print(line)
     assert passed, "Validation spot checks failed!"
     print("ALL TESTS PASSED SUCCESSFULLY!")
+
+
+def test_ingestion_end_to_end():
+    """Runs fixture ingestion without overwriting the real project dataset."""
+    with tempfile.TemporaryDirectory() as directory:
+        _run_ingestion_test(Path(directory))
 
 
 if __name__ == "__main__":

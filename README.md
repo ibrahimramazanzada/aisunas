@@ -50,7 +50,7 @@ az-legal-rag/
 
 ### 1. Clone & Install Dependencies
 ```bash
-git clone https://github.com/<your-username>/az-legal-rag.git
+git clone https://github.com/ibrahimramazanzada/az-legal-rag.git
 cd az-legal-rag
 
 python -m venv venv
@@ -60,7 +60,20 @@ venv\Scripts\activate      # On Windows
 pip install -r requirements.txt
 ```
 
-### 2. Run the Interactive Mentor Demo / Benchmark
+### 2. Launch the Phase 10 Application
+
+Configure `GEMINI_API_KEY` in your environment or local `.env` file and use
+the existing classifier, BM25 and Chroma artifacts. See
+[Phase 10 setup, demonstration and limitations](docs/PHASE10.md).
+
+```bash
+python -m streamlit run app/streamlit_app.py
+```
+
+The Azerbaijani UI supports quick questions and confirmed case building,
+with source excerpts and grounded complaint drafts.
+
+### Interactive Mentor Demo / Benchmark
 ```bash
 # Automated benchmark across 5 core labour topics (dismissal, wages, leave, probation, etc.)
 python demo.py

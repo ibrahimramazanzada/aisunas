@@ -13,7 +13,7 @@ from src.dialogue.slot_schema import (
 )
 from src.generation.case_prompts import (
     CaseMode, build_gathering_prompts, draft_complaint, draft_session,
-    gathering_question,
+    gathering_question, quote_options,
 )
 
 
@@ -222,6 +222,53 @@ class TestComplaint(unittest.TestCase):
             self.assert_failure(draft_complaint(self.state, self.llm),
                                 "invalid_output")
 
+    def test_wrapped_complete_paragraph_is_preserved(self):
+        """PDF wrapping must preserve whole paragraphs verbatim."""
+        paragraph = ("Tam sınaq abzasının birinci sətri\n"
+                     "son sətri burada bitir.")
+        source = source_record(
+            text=paragraph + "\n\nBaşqa tam sınaq abzasıdır.")
+        self.state.retrieved_articles = [source]
+        self.llm.return_value = json.dumps({"legal_basis": [{
+            "chunk_id": source["chunk_id"], "quote": paragraph}]})
+        result = draft_complaint(self.state, self.llm)
+        self.assertEqual(result.status, "drafted")
+        self.assertIn(paragraph, result.draft)
+        self.llm.return_value = json.dumps({"legal_basis": [{
+            "chunk_id": source["chunk_id"],
+            "quote": paragraph.splitlines()[0]}]})
+        result = draft_complaint(self.state, self.llm)
+        self.assert_failure(result, "invalid_output")
+        self.assertEqual(result.failure_reason, "incomplete_paragraph")
+
+    def test_excerpt_id_resolves_exact_source_text(self):
+        """Provider selects identity; backend supplies the exact quote."""
+        self.llm.return_value = json.dumps({"legal_basis": [{
+            "chunk_id": "fixture-1", "quote_id": "p0"}]})
+        result = draft_complaint(self.state, self.llm)
+        self.assertEqual(result.status, "drafted")
+        self.assertEqual(result.legal_basis[0]["quote"],
+                         source_record()["text"])
+        for value in ("missing", [], None):
+            self.llm.return_value = json.dumps({"legal_basis": [{
+                "chunk_id": "fixture-1", "quote_id": value}]})
+            self.assert_failure(draft_complaint(self.state, self.llm),
+                                "invalid_output")
+
+    def test_excerpt_options_exclude_unsupported_cross_references(self):
+        """Exact quotes cannot bypass citation validation."""
+        source = source_record(text="Bu sınaq mətni Maddə 999-a istinad edir.")
+        self.assertEqual(quote_options([source])["fixture-1"], {})
+
+    def test_provider_status_is_safe_and_does_not_expose_exception(self):
+        """Safe diagnostics retain status, never exception payloads."""
+        error = RuntimeError("private provider payload")
+        error.code = 504
+        self.llm.side_effect = error
+        result = draft_complaint(self.state, self.llm)
+        self.assertEqual(result.provider_status, 504)
+        self.assertNotIn("private", result.message)
+
     def test_only_used_sources_are_returned(self):
         """Output metadata names exactly the sources selected for the draft."""
         self.state.retrieved_articles.append(
@@ -367,9 +414,8 @@ class TestLocalArtifactSmoke(unittest.TestCase):
         self.assertEqual(chunks[0].article_number, "70")
         state = complete_case(DC.UNLAWFUL_DISMISSAL)
         state.retrieved_articles = [chunks[0].to_dict()]
-        paragraphs = [line.strip() for line in chunks[0].text.splitlines()
-                      if len(line.strip()) >= 20 and len(line.split()) >= 3
-                      and "maddə" not in line.lower()]
+        paragraphs = list(quote_options(state.retrieved_articles)[
+            chunks[0].chunk_id].values())
         self.assertTrue(paragraphs)
         provider = Mock(return_value=json.dumps({"legal_basis": [{
             "chunk_id": chunks[0].chunk_id, "quote": paragraphs[0]}]}))
