@@ -51,7 +51,9 @@ DRAFT_COMPLAINT_PROMPT = (
     "sübut və ya maddə nömrəsi uydurma. Uyğun hüquqi əsas yoxdursa "
     "legal_basis boş olsun. Yalnız bu formatda JSON qaytar: "
     '{"legal_basis": [{"chunk_id": "verilən mənbə ID-si", '
-    '"quote": "mənbədən olduğu kimi sitat"}]}. '
+    '"quote_id": "quote_options daxilində verilən abzas ID-si"}]}. '
+    "Sitat mətnini yenidən yazma; yalnız verilən ID-ləri seç. "
+    "İşəgötürənin xitamı ilə işçinin istefasını qarışdırma. "
     "Ən çox üç tam abzas seç; cümlənin hissəsini kəsmə. "
     "Sitatın işə aid olması hüquqi təminat deyil. "
     "Ərizənin digər bölmələrini tətbiq yoxlanmış faktlardan tərtib edəcək."
@@ -117,6 +119,40 @@ class ComplaintResult:
     facts: dict = field(default_factory=dict)
     legal_basis: list[dict] = field(default_factory=list)
     flagged_articles: list[str] = field(default_factory=list)
+    failure_reason: Optional[str] = None
+    provider_status: Optional[int] = None
+
+
+DRAFT_RESPONSE_SCHEMA = {
+    "type": "object", "properties": {
+        "legal_basis": {"type": "array", "maxItems": 3, "items": {
+            "type": "object", "properties": {
+                "chunk_id": {"type": "string"},
+                "quote_id": {"type": "string"},
+            }, "required": ["chunk_id", "quote_id"],
+            "additionalProperties": False,
+        }},
+    }, "required": ["legal_basis"], "additionalProperties": False,
+}
+
+
+def source_paragraphs(text: str) -> list[str]:
+    """Preserves PDF line wraps within whole paragraphs or numbered clauses."""
+    return [part.strip() for part in re.split(
+        r"\n\s*\n|\n(?=\d+\.\s|[a-zəçğıöşü]\)\s)", text)
+        if part.strip()]
+
+
+def quote_options(sources: list[dict]) -> dict:
+    """Offers exact substantive excerpts with independently valid citations."""
+    evidence = [SimpleNamespace(**source) for source in sources]
+    return {source["chunk_id"]: {
+        f"p{index}": text
+        for index, text in enumerate(source_paragraphs(source["text"]))
+        if len(text) >= 20 and len(text.split()) >= 3
+        and not re.match(r"^Maddə\s+\d+", text)
+        and validate_article_citations(text, evidence).is_valid
+    } for source in sources}
 
 
 def gathering_question(slot_name: str) -> str:
@@ -145,6 +181,7 @@ def build_draft_prompts(state: CaseState, sources: list[dict]) -> tuple:
         "category": state.dispute_category.value,
         "facts": state.filled_slots,
         "sources": sources,
+        "quote_options": quote_options(sources),
     }
     return DRAFT_COMPLAINT_PROMPT, json.dumps(payload, ensure_ascii=False)
 
@@ -260,15 +297,26 @@ def draft_complaint(state: CaseState,
     try:
         if llm_fn is None:
             from src.generation.qa_prompts import call_llm
-            llm_fn = call_llm
+
+            def structured_provider(s, u):
+                """Preserves injected two-argument provider compatibility."""
+                return call_llm(
+                    s, u, response_json_schema=DRAFT_RESPONSE_SCHEMA)
+
+            llm_fn = structured_provider
         raw = llm_fn(system, user)
-    except Exception:
+    except Exception as exc:
+        code = getattr(exc, "code", None)
         return _failure("provider_error", "Ərizə hazırlanarkən xidmət "
-                        "xətası baş verdi. Yenidən cəhd edin.")
+                        "xətası baş verdi. Yenidən cəhd edin.",
+                        failure_reason="provider_failure",
+                        provider_status=code if type(code) is int else None)
+    reason = "invalid_json"
     try:
         if not isinstance(raw, str):
             raise ValueError("Expected JSON text.")
         data = json.loads(raw, object_pairs_hook=_unique_object)
+        reason = "invalid_fields"
         if not isinstance(data, dict) or set(data) != {"legal_basis"}:
             raise ValueError("Unexpected output fields.")
         selections = data["legal_basis"]
@@ -278,18 +326,26 @@ def draft_complaint(state: CaseState,
             return _failure("insufficient_grounding",
                             settings.NO_ARTICLE_FALLBACK_AZ)
         by_id = {source["chunk_id"]: source for source in sources}
+        options = quote_options(sources)
         basis, used = [], []
         for selection in selections:
             if (not isinstance(selection, dict)
-                    or set(selection) != {"chunk_id", "quote"}):
+                    or set(selection) not in (
+                        {"chunk_id", "quote"}, {"chunk_id", "quote_id"})):
                 raise ValueError("Invalid source selection.")
             source = by_id.get(selection["chunk_id"])
-            quote = selection["quote"]
+            reason = "unknown_source_or_excerpt"
+            if "quote_id" in selection:
+                quote = options.get(selection["chunk_id"], {}).get(
+                    selection["quote_id"])
+            else:
+                quote = selection["quote"]
             if (source is None or not isinstance(quote, str)
                     or len(quote.strip()) < 20 or len(quote.split()) < 3
                     or quote not in source["text"]):
                 raise ValueError("Quotation does not match a source.")
-            paragraphs = {line.strip() for line in source["text"].splitlines()}
+            reason = "incomplete_paragraph"
+            paragraphs = set(source_paragraphs(source["text"]))
             if quote != source["text"] and quote not in paragraphs:
                 raise ValueError("Expected complete source paragraphs.")
             basis.append({"chunk_id": source["chunk_id"],
@@ -306,7 +362,8 @@ def draft_complaint(state: CaseState,
                             flagged_articles=citation.unsupported_articles)
     except (TypeError, ValueError, KeyError, RecursionError):
         return _failure("invalid_output", "Xidmətin cavabı etibarlı ərizə "
-                        "yaratmağa imkan vermədi. Yenidən cəhd edin.")
+                        "yaratmağa imkan vermədi. Yenidən cəhd edin.",
+                        failure_reason=reason)
     return ComplaintResult(
         "drafted", draft, draft=draft, grounded=True,
         sources=used, facts=state.filled_slots, legal_basis=basis,

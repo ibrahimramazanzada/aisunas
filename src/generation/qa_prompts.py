@@ -46,10 +46,18 @@ SYSTEM_PROMPT = (
     "işə getməliyəm?', 'bayramda işləsəm nə olar?') — bu zaman aidiyyatlı "
     "məzuniyyət, istirahət günü və ya iş vaxtı maddələrini tətbiq edərək "
     "izah et. "
-    "NOT_FOUND yalnız sualın əmək hüququ ilə HEÇ BİR əlaqəsi olmadıqda "
-    "yaz (məs. yemək resepti, hava, coğrafiya). "
+    "Maddənin tətbiq şərtlərini saxla. İşçinin təşəbbüsü ilə xitam "
+    "qaydasını işəgötürənin təşəbbüsü ilə xitama tətbiq etmə. "
+    "Müqavilənin müddətli olduğunu və ya işçinin istefa verdiyini "
+    "istifadəçi deməyibsə, fərz etmə. Kontekstdə məhkəməyə müraciət "
+    "qaydası yoxdursa, belə hüquqi tövsiyə əlavə etmə. "
+    "Sual bir neçə məsələni əhatə edirsə, kontekstin əsaslandırdığı "
+    "hissələrə cavab ver, digər hissələr üçün məlumatın yetərli "
+    "olmadığını açıq bildir. Xitamın səbəbi məlum deyilsə, verilən "
+    "ümumi əsasları izah et, konkret əsasın mövcud olduğunu fərz etmə. "
+    "Sual əmək hüququ ilə bağlı olsa belə, verilən kontekstdə "
+    "tətbiq olunan hüquqi əsas yoxdursa NOT_FOUND yaz. "
     "Cavabı Azərbaycan dilində, qısa və aydın yaz."
-    + " Yalnız tam əlaqəsiz olduqda bu sözü yaz: " + NOT_FOUND_TOKEN + "."
 )
 
 USER_TEMPLATE = "Kontekst:\n{context}\n\nSual: {question}"
@@ -74,6 +82,7 @@ class QAResult:
     grounded: bool
     sources: List[Any] = field(default_factory=list)
     flagged_articles: List[str] = field(default_factory=list)
+    failure_reason: Optional[str] = None
 
 
 def format_context(chunks: List[Any]) -> str:
@@ -147,6 +156,7 @@ def _generate_with_retry(
     model: str,
     system: str,
     user: str,
+    response_json_schema: Optional[dict] = None,
 ) -> str:
     """Generates content with automatic exponential backoff retries."""
     from google.genai import types
@@ -159,12 +169,16 @@ def _generate_with_retry(
             temperature=0,
             # Headroom: reasoning models count thinking tokens here.
             max_output_tokens=2048,
+            response_mime_type=("application/json"
+                                if response_json_schema else None),
+            response_json_schema=response_json_schema,
         ),
     )
     return response.text or ""
 
 
-def call_llm(system: str, user: str) -> str:
+def call_llm(system: str, user: str, *,
+             response_json_schema: Optional[dict] = None) -> str:
     """Calls the configured Gemini model with exponential backoff retries.
 
     Uses ``settings.GEMINI_API_KEY`` and ``settings.LLM_MODEL_NAME``.
@@ -172,6 +186,7 @@ def call_llm(system: str, user: str) -> str:
     Args:
         system: System prompt.
         user: User prompt.
+        response_json_schema: Optional strict JSON schema for case providers.
 
     Returns:
         The model's text output (empty string if nothing was
@@ -186,15 +201,17 @@ def call_llm(system: str, user: str) -> str:
         model=settings.LLM_MODEL_NAME,
         system=system,
         user=user,
+        response_json_schema=response_json_schema,
     )
 
 
-def _fallback(flagged: Optional[List[str]] = None) -> QAResult:
+def _fallback(flagged: Optional[List[str]] = None, *,
+              failure_reason: Optional[str] = None) -> QAResult:
     """Builds an ungrounded result carrying the fixed fallback text."""
     return QAResult(
         answer=add_legal_disclaimer(settings.NO_ARTICLE_FALLBACK_AZ),
         grounded=False,
-        flagged_articles=flagged or [],
+        flagged_articles=flagged or [], failure_reason=failure_reason,
     )
 
 
@@ -226,27 +243,29 @@ def answer_question(
     chunks = retrieve_fn(question, top_k=top_k)
     if not chunks or not is_relevant(question, chunks):
         logger.info("Retrieval below threshold; returning fallback.")
-        return _fallback()
+        return _fallback(failure_reason="insufficient_retrieval")
 
     system, user = build_prompts(question, chunks)
     try:
         raw = (llm_fn(system, user) or "").strip()
     except AssertionError:
         raise
-    except Exception as exc:
-        logger.error("LLM call failed after retries: %s", exc)
-        return _fallback()
+    except Exception:
+        logger.error("LLM call failed after retries.")
+        return _fallback(failure_reason="provider_error")
 
     if not raw or NOT_FOUND_TOKEN in raw:
         logger.info("LLM reported insufficient context.")
-        return _fallback()
+        reason = "empty_response" if not raw else "provider_refusal"
+        return _fallback(failure_reason=reason)
 
     check = validate_article_citations(raw, chunks)
     if not check.is_valid:
         logger.warning(
             "Ungrounded articles cited: %s", check.unsupported_articles
         )
-        return _fallback(check.unsupported_articles)
+        return _fallback(check.unsupported_articles,
+                         failure_reason="unsupported_citations")
 
     return QAResult(add_legal_disclaimer(raw), True, chunks)
 
