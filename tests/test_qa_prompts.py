@@ -46,6 +46,29 @@ class TestQAPrompts(unittest.TestCase):
         self.assertTrue(result.grounded)
         self.assertEqual(result.answer, add_legal_disclaimer(text))
 
+    def test_structured_provider_configuration_preserves_schema(self):
+        """Gemini gets the strict schema without changing the return format."""
+        client = MagicMock()
+        client.models.generate_content.return_value.text = '{"legal_basis":[]}'
+        from src.generation.case_prompts import DRAFT_RESPONSE_SCHEMA
+        raw = qa_prompts._generate_with_retry.__wrapped__(
+            client, "test-model", "system", "user", DRAFT_RESPONSE_SCHEMA)
+        config = client.models.generate_content.call_args.kwargs["config"]
+        self.assertEqual(config.response_mime_type, "application/json")
+        self.assertEqual(config.response_json_schema, DRAFT_RESPONSE_SCHEMA)
+        self.assertEqual(raw, '{"legal_basis":[]}')
+
+    def test_quick_provider_remains_plain_text(self):
+        """Optional structured output does not affect one-shot QA callers."""
+        client = MagicMock()
+        client.models.generate_content.return_value.text = "Adi cavab"
+        raw = qa_prompts._generate_with_retry.__wrapped__(
+            client, "test-model", "system", "user")
+        config = client.models.generate_content.call_args.kwargs["config"]
+        self.assertIsNone(config.response_mime_type)
+        self.assertIsNone(config.response_json_schema)
+        self.assertEqual(raw, "Adi cavab")
+
     def test_ungrounded_article_triggers_fallback(self):
         result = qa_prompts.answer_question(
             "sual", llm_fn=lambda s, u: "Bax: Maddə 999.",
@@ -88,6 +111,23 @@ class TestQAPrompts(unittest.TestCase):
         )
         self.assertFalse(result.grounded)
         self.assertTrue(result.answer.endswith(settings.LEGAL_DISCLAIMER_AZ))
+
+    def test_safe_failure_reasons_distinguish_provider_and_retrieval(self):
+        """Distinguishes service failures from missing legal evidence."""
+        provider = MagicMock(side_effect=TimeoutError("private payload"))
+        with patch.object(qa_prompts.logger, "error") as logging:
+            result = qa_prompts.answer_question(
+                "sual", llm_fn=provider, retrieve_fn=self.retrieve())
+        self.assertEqual(result.failure_reason, "provider_error")
+        self.assertNotIn("private", str(logging.call_args))
+        for raw, reason in (("", "empty_response"),
+                            ("NOT_FOUND", "provider_refusal")):
+            result = qa_prompts.answer_question(
+                "sual", llm_fn=lambda s, u: raw, retrieve_fn=self.retrieve())
+            self.assertEqual(result.failure_reason, reason)
+        result = qa_prompts.answer_question(
+            "sual", retrieve_fn=lambda q, top_k=None: [])
+        self.assertEqual(result.failure_reason, "insufficient_retrieval")
 
 
 if __name__ == "__main__":

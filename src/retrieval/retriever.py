@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 from src.config import settings
+from src.retrieval.case_query import enrich_query
 from src.indexing.bm25_indexer import BM25Manager
 from src.indexing.vector_store import EmbeddingManager, VectorStoreManager
 from src.utils.logger import get_logger
@@ -95,7 +96,7 @@ class LegalRetriever:
             top_k: Number of ranked chunks to return (defaults to config).
             dense_weight: Relative weight for dense similarity.
             bm25_weight: Relative weight for lexical match.
-            case_state: Optional CaseState instance to enrich retrieval query.
+            case_state: Optional CaseState to enrich the retrieval query.
 
         Returns:
             List of RetrievedChunk instances ordered by hybrid score.
@@ -105,16 +106,11 @@ class LegalRetriever:
             logger.warning("Empty query passed to retriever.")
             return []
 
-        # Future Phase 8 hook: enrich query if case_state is supplied
-        effective_query = query.strip()
-        if case_state is not None:
-            extra_terms = self._extract_case_state_terms(case_state)
-            if extra_terms:
-                effective_query = f"{effective_query} {extra_terms}"
+        effective_query = enrich_query(query, case_state)
 
         # Expand colloquial labour dispute phrasings
         # Replace Azerbaijani-specific uppercase letters BEFORE .lower() so
-        # that locale-insensitive Windows lowercasing does not leave İ/I intact.
+        # that locale-insensitive lowercasing does not leave İ/I intact.
         normalized_q = (
             effective_query
             .replace("İ", "i")
@@ -129,6 +125,14 @@ class LegalRetriever:
         if any(w in normalized_q for w in colloquial_dismissal_words):
             colloquial_expansions.append(
                 "işdən çıxarılma əmək müqaviləsinə xitam ləğv"
+            )
+        if re.search(
+            r"\bişəgötürən\b[^.!?]{0,250}\bxitam\s+"
+            r"ver(?:ib|di|ir|miş)\b", normalized_q,
+        ):
+            colloquial_expansions.append(
+                "əmək müqaviləsinin işəgötürən tərəfindən "
+                "ləğv edilməsinin əsasları"
             )
         if any(w in normalized_q for w in (
             "maaşımı vermirlər", "maaş gecikir", "pul vermirlər"
@@ -306,17 +310,8 @@ class LegalRetriever:
         return output_chunks
 
     def _extract_case_state_terms(self, case_state: Any) -> str:
-        """Extracts search keywords from CaseState attributes if present."""
-        terms = []
-        cat = getattr(case_state, "dispute_category", None)
-        if cat:
-            terms.append(str(cat).replace("_", " "))
-        slots = getattr(case_state, "filled_slots", {})
-        if isinstance(slots, dict):
-            for key, val in slots.items():
-                if val and isinstance(val, str):
-                    terms.append(val)
-        return " ".join(terms)
+        """Returns Azerbaijani confirmed case terms for existing callers."""
+        return enrich_query("", case_state).strip()
 
 
 # Global module-level convenience function
