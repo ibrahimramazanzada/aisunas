@@ -126,6 +126,14 @@ class LegalRetriever:
             colloquial_expansions.append(
                 "işdən çıxarılma əmək müqaviləsinə xitam ləğv"
             )
+        if re.search(
+            r"\bişəgötürən\b[^.!?]{0,250}\bxitam\s+"
+            r"ver(?:ib|di|ir|miş)\b", normalized_q,
+        ):
+            colloquial_expansions.append(
+                "əmək müqaviləsinin işəgötürən tərəfindən "
+                "ləğv edilməsinin əsasları"
+            )
         if any(w in normalized_q for w in (
             "maaşımı vermirlər", "maaş gecikir", "pul vermirlər"
         )):
