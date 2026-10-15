@@ -4,9 +4,20 @@ Provides centralized management of directory paths, model identifiers,
 retrieval thresholds, and legal disclaimer constants across the pipeline.
 """
 
+import os
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Automatically populate os.environ from Streamlit secrets (Streamlit Cloud deployment)
+try:
+    import streamlit as st
+    if hasattr(st, "secrets"):
+        for _k, _v in st.secrets.items():
+            if isinstance(_v, (str, int, float, bool)):
+                os.environ.setdefault(_k, str(_v))
+except Exception:
+    pass
 
 
 class Settings(BaseSettings):

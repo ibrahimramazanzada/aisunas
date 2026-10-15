@@ -17,8 +17,8 @@ venv/
 env/
 ENV/
 
-# Local Vector Database persistence (rebuilt with `python -m src.indexing.build_index`)
-data/chroma_db/
+# Local Vector Database persistence (tracked for cloud deployment, ~8MB)
+# data/chroma_db/
 data/qdrant_db/
 
 # IDE and OS metadata

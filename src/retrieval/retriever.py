@@ -166,10 +166,14 @@ class LegalRetriever:
         # Fetch more candidates for rank fusion
         candidate_k = max(k * 3, 15)
 
-        # 1. Dense vector retrieval
-        dense_results = self.vector_mgr.query(
-            query_text=effective_query, top_k=candidate_k
-        )
+        # 1. Dense vector retrieval (graceful fallback if ChromaDB is empty or unpopulated)
+        try:
+            dense_results = self.vector_mgr.query(
+                query_text=effective_query, top_k=candidate_k
+            )
+        except Exception as exc:
+            logger.warning("Dense vector retrieval failed (%s); falling back to BM25.", exc)
+            dense_results = []
 
         # 2. BM25 lexical retrieval
         bm25_results = self.bm25_mgr.query(
