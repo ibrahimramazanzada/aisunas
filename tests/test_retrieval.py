@@ -98,6 +98,13 @@ class TestEmployerDismissalQueries(unittest.TestCase):
         message = "İşəgötürən müqaviləmə xitam verməyib."
         self.assertEqual(self.query_used(message), message)
 
+    def test_maternity_leave_expansion(self):
+        """Expands colloquial analıq / dekret queries with statutory terms."""
+        message = "analıq məzuniyyətinə necə çıxa bilərəm"
+        query = self.query_used(message)
+        self.assertTrue(query.startswith(message))
+        self.assertIn("hamiləliyə və doğuşa görə məzuniyyət", query)
+
 
 if __name__ == "__main__":
     if sys.stdout.encoding != "utf-8":

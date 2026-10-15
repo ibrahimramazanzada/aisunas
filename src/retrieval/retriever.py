@@ -140,6 +140,12 @@ class LegalRetriever:
             colloquial_expansions.append(
                 "əmək haqqının ödənilməsi müddəti gecikdirilməsi"
             )
+        if any(w in normalized_q for w in (
+            "analıq", "analığa", "dekret", "dekretə", "doğuş"
+        )):
+            colloquial_expansions.append(
+                "hamiləliyə və doğuşa görə məzuniyyət sosial məzuniyyət"
+            )
         if colloquial_expansions:
             effective_query = (
                 f"{effective_query} {' '.join(colloquial_expansions)}"

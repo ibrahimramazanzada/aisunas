@@ -138,9 +138,12 @@ def _get_client():
 def _is_retryable_error(exc: BaseException) -> bool:
     """Returns True if exception is a transient network or rate-limit spike."""
     err_str = str(exc).lower()
+    # Daily quota exhaustion cannot be recovered by short backoff;
+    # allow fast failure so call_llm can switch to a fallback model.
+    if "quota exceeded" in err_str or "retry in " in err_str or "resource_exhausted" in err_str:
+        return False
     retryable_markers = (
-        "429", "503", "500", "overloaded", "quota", "resource_exhausted",
-        "rate limit", "spikes", "timeout", "unavailable",
+        "503", "500", "overloaded", "spikes", "timeout", "unavailable",
     )
     return any(marker in err_str for marker in retryable_markers)
 
@@ -179,9 +182,10 @@ def _generate_with_retry(
 
 def call_llm(system: str, user: str, *,
              response_json_schema: Optional[dict] = None) -> str:
-    """Calls the configured Gemini model with exponential backoff retries.
+    """Calls the configured Gemini model with model fallback and retries.
 
-    Uses ``settings.GEMINI_API_KEY`` and ``settings.LLM_MODEL_NAME``.
+    Uses ``settings.GEMINI_API_KEY`` and ``settings.LLM_MODEL_NAME``,
+    falling back to alternative models if the primary model's quota is exhausted.
 
     Args:
         system: System prompt.
@@ -196,13 +200,38 @@ def call_llm(system: str, user: str, *,
         RuntimeError: If no Gemini API key is configured.
     """
     client = _get_client()
-    return _generate_with_retry(
-        client=client,
-        model=settings.LLM_MODEL_NAME,
-        system=system,
-        user=user,
-        response_json_schema=response_json_schema,
-    )
+    candidates = [
+        settings.LLM_MODEL_NAME,
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash-lite",
+        "gemini-3-flash-preview",
+    ]
+    seen = set()
+    models = [m for m in candidates if m and not (m in seen or seen.add(m))]
+
+    last_exc = None
+    for model_name in models:
+        try:
+            return _generate_with_retry(
+                client=client,
+                model=model_name,
+                system=system,
+                user=user,
+                response_json_schema=response_json_schema,
+            )
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if any(k in err_str for k in ("429", "quota", "resource_exhausted", "not_found", "404")):
+                logger.warning(
+                    "Model %s failed (%s); trying fallback model.",
+                    model_name, exc,
+                )
+                last_exc = exc
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+    return ""
 
 
 def _fallback(flagged: Optional[List[str]] = None, *,

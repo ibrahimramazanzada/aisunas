@@ -20,7 +20,9 @@ from src.guardrails.disclaimer import add_legal_disclaimer
 from src.generation.case_prompts import (
     GATHERING_PROMPT, build_gathering_prompts, gathering_question,
 )
+from src.utils.logger import get_logger
 
+logger = get_logger(__name__)
 
 EXTRACTION_PROMPT = GATHERING_PROMPT
 
@@ -28,6 +30,13 @@ EXTRACTION_PROMPT = GATHERING_PROMPT
 def _normalize(text: str) -> str:
     """Normalizes Azerbaijani case for interaction control words."""
     return text.replace("İ", "i").replace("I", "ı").lower().strip()
+
+
+def _span_in_text(span: str, text: str) -> bool:
+    """Checks whether span occurs in text, allowing for case variations."""
+    if not span or not text:
+        return False
+    return span in text or _normalize(span) in _normalize(text)
 
 
 def _uncertain_span(value: str, message: str) -> bool:
@@ -77,7 +86,38 @@ class SlotExtractor:
             llm = call_llm
         allowed = slots_for(state.dispute_category)
         system, user = build_gathering_prompts(message, state, pending_slot)
-        raw = llm(system, user)
+        # Pass a JSON schema so call_llm sets response_mime_type=application/json,
+        # forcing Gemini to return raw JSON instead of markdown-fenced text
+        # (```json...```) that json.loads would fail to parse.
+        _EXTRACTION_SCHEMA = {
+            "type": "object",
+            "properties": {
+                "slots": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "correction": {"type": "boolean"},
+                        },
+                        "required": ["value", "confidence"],
+                    },
+                }
+            },
+            "required": ["slots"],
+        }
+        try:
+            raw = llm(system, user,
+                      response_json_schema=_EXTRACTION_SCHEMA)
+        except TypeError:
+            # Injected test LLM does not accept response_json_schema kwarg.
+            raw = llm(system, user)
+        # Safety net: strip markdown fences some models add even in JSON mode.
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw.rstrip())
         data = json.loads(raw, object_pairs_hook=_unique_json_object)
         if (not isinstance(data, dict)
                 or not isinstance(data.get("slots"), dict)):
@@ -88,13 +128,17 @@ class SlotExtractor:
                 continue
             value = record.get("value")
             confidence = record.get("confidence")
-            if (not isinstance(value, str) or not value.strip()
-                    or value not in message
-                    or _uncertain_span(value, message)
+            # Strip both sides so minor leading/trailing whitespace in the
+            # LLM's verbatim span does not silently discard a valid answer.
+            value_stripped = value.strip() if isinstance(value, str) else value
+            if (not isinstance(value, str) or not value_stripped
+                    or not _span_in_text(value_stripped, message)
+                    or _uncertain_span(value_stripped, message)
                     or type(confidence) not in (int, float)
                     or not self.threshold <= confidence <= 1
                     or not math.isfinite(confidence)):
                 continue
+            value = value_stripped
             accepted[name] = {
                 "value": value,
                 "correction": record.get("correction") is True,
@@ -248,19 +292,26 @@ class DialogueFlow:
         control = (not was_confirmed and normalized in
                    ("bəli", "hə", "təsdiq edirəm", "xeyr"))
         messages = [] if control or category_control else [message]
+        # Category-label strings (e.g. "Qanunsuz işdən çıxarılma") are not
+        # slot-bearing answers; replaying them confuses the extractor.
+        _cat_controls = {
+            _normalize(item.value) for item in DisputeCategory
+        } | {_normalize(category_label(item)) for item in DisputeCategory}
         if not was_confirmed:
             messages = [record["content"] for record in
                         state.conversation_history
                         if record.get("role") == "user"
                         and _normalize(record["content"]) not in
                         ("bəli", "hə", "təsdiq edirəm", "xeyr")
+                        and _normalize(record["content"]) not in _cat_controls
                         and record["content"] != message]
             if not control and not category_control:
                 messages.append(message)
         for source in messages:
             try:
                 records = self.extractor.extract(source, state, pending)
-            except Exception:
+            except Exception as exc:
+                logger.warning("Extraction failed for message %r: %s", source, exc)
                 continue
             if not isinstance(records, dict):
                 continue
@@ -270,8 +321,13 @@ class DialogueFlow:
                     continue
                 value = record.get("value")
                 # Enforce provenance for injected extractors too.
-                if (not isinstance(value, str) or not value.strip()
-                        or value not in source
+                # Strip whitespace so minor LLM formatting differences do not
+                # silently discard a valid answer (same fix as SlotExtractor).
+                value_stripped = (value.strip()
+                                  if isinstance(value, str) else value)
+                value = value_stripped
+                if (not isinstance(value, str) or not value
+                        or not _span_in_text(value, source)
                         or _uncertain_span(value, source)):
                     continue
                 if name in state.filled_slots:

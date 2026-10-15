@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # Model identifiers
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-m3"
-    LLM_MODEL_NAME: str = "gemini-2.5-flash"
+    LLM_MODEL_NAME: str = "gemini-flash-lite-latest"
     GEMINI_API_KEY: Optional[str] = None
 
     # Retrieval and Guardrail parameters

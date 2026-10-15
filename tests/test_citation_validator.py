@@ -121,6 +121,18 @@ class TestCitationValidator(unittest.TestCase):
             "30 gün ərzində 70-ci maddəyə əsasən", ["70"], ["70"], []
         )
 
+    def test_subclause_period_citation(self):
+        self.check_answer(
+            "Maddə 51.1-ə əsasən sınaq müddəti təyin edilir.",
+            ["51"], ["51"], [],
+        )
+
+    def test_hyphenated_amendment_article(self):
+        self.check_answer(
+            "Maddə 76-1 və 76-1-ci maddə üzrə tənzimləmə",
+            ["76-1"], ["76-1"], [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

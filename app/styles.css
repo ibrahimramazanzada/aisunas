@@ -65,14 +65,40 @@ h3 { font-size: 1.05rem !important; }
     border-color: var(--line); border-radius: 14px; padding: 1rem;
 }
 [data-testid="stAlert"] { border-radius: 12px; }
-.st-key-complaint_document {
-    background: #f0ede5; color: #252727; border: 1px solid #b49d6a;
-    border-radius: 10px; padding: 2.2rem;
-    box-shadow: 0 8px 30px #0003;
+.st-key-complaint_document,
+[class*="st-key-complaint_document"] {
+    background: #1c2024 !important;
+    background-color: #1c2024 !important;
+    border: 1px solid #c8aa67 !important;
+    border-radius: 12px !important;
+    padding: 2rem !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45) !important;
 }
-.st-key-complaint_document [data-testid="stText"] {
-    color: #252727; font-family: Georgia, "Times New Roman", serif;
-    font-size: 1rem; line-height: 1.8; white-space: pre-wrap;
+.st-key-complaint_document *,
+.st-key-complaint_document [data-testid="stText"],
+.st-key-complaint_document [data-testid="stText"] pre,
+.st-key-complaint_document [data-testid="stText"] code,
+.st-key-complaint_document pre,
+.st-key-complaint_document code,
+[class*="st-key-complaint_document"] *,
+[class*="st-key-complaint_document"] [data-testid="stText"],
+[class*="st-key-complaint_document"] [data-testid="stText"] pre,
+[class*="st-key-complaint_document"] [data-testid="stText"] code,
+[class*="st-key-complaint_document"] pre,
+[class*="st-key-complaint_document"] code {
+    color: #f7f5f0 !important;
+    background: transparent !important;
+    background-color: transparent !important;
+    font-family: Georgia, "Times New Roman", serif !important;
+    font-size: 1.02rem !important;
+    line-height: 1.85 !important;
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+}
+.st-key-complaint_document ::selection,
+[class*="st-key-complaint_document"] ::selection {
+    background: #c8aa67 !important;
+    color: #121416 !important;
 }
 [class*="st-key-source_evidence"] [data-testid="stText"] {
     font-size: .92rem; line-height: 1.7; white-space: pre-wrap;
